@@ -46,6 +46,7 @@ int main(int argc, char** argv) {
 
   // arrays
   vector<int> global_arr(n, 0);
+  vector<int> global_ranking(n, 0);
   vector<int> local_row(N, 0);
   vector<int> local_col(N, 0);
 
@@ -160,6 +161,8 @@ int main(int argc, char** argv) {
              rowComm
              );
 
+  MPI_Comm_free(&rowComm);
+
   // Print reduced Ranking
   for (int r = 0; r < size; r++) {
     MPI_Barrier(MPI_COMM_WORLD);  // sincroniza antes de imprimir
@@ -177,7 +180,35 @@ int main(int argc, char** argv) {
     }
   }
 
-  MPI_Comm_free(&rowComm);
+  // Gathering rankings in the root process
+
+  // El gather se hace con comunicación punto a punto O(P-1)
+  if (col == row && rank != 0) {
+    MPI_Send(row_ranking.data(), N, MPI_INT, 0, 0, MPI_COMM_WORLD);
+  }
+  if (rank == 0) {
+    for (int i = 0; i < N; i++) {
+      global_ranking[i] = row_ranking[i];
+    }
+
+    for (int i = 1; i < P; i++) {
+      MPI_Recv(global_ranking.data() + i * N, N, MPI_INT, (i + (P * i)), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+    }
+  }
+
+  // Hasta aquí se calcula el tiempo
+  
+  // Ordenamiento final en O(n) y print
+  if (rank == 0) {
+    vector<int> ordered_array(n, 0);
+    for (int i = 0; i < n; i++) {
+      size_t pos = global_ranking[i] - 1;
+      ordered_array[pos] = global_arr[i];
+    }
+
+    cout << "Ordered array: ";
+    print_array(ordered_array, n);
+  }
 
   MPI_Finalize();
   return 0;
