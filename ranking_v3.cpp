@@ -5,6 +5,7 @@
 #include <random>
 #include <mpi.h>
 #include <cmath>
+#include <ctime>
 
 using namespace std;
 
@@ -37,7 +38,8 @@ int main(int argc, char** argv) {
   MPI_Comm_size(MPI_COMM_WORLD, &size);
 
   // Constants
-  int n = 18;
+  double t0,t1;
+  int n = 36;
   int P = sqrt(size);
   int N = n / P;
   int row = rank / P;
@@ -50,37 +52,32 @@ int main(int argc, char** argv) {
   vector<int> local_row(N, 0);
   vector<int> local_col(N, 0);
 
-  // Generate array and boradcast cols
+  // Generate array and boradcast cols and rows
   if (rank == 0) {
     generate_unique_array(global_arr, n);
     cout << "Generated array: ";
     print_array(global_arr, n);
-
-    for (int i = 1; i < P; i++)
-      MPI_Isend(&global_arr[i*N], N, MPI_INT, i, 0, MPI_COMM_WORLD, &requests[i]);
-
-    for (int i = 0; i < N; i++)
-      local_row[i] = global_arr[i];
   }
+
+  // Empezamos la medición del tiempo en paralelo
+  t0=MPI_Wtime();
+
+
+  MPI_Comm row0Comm;
+  int inFirstRow = (row == 0) ? 1 : MPI_UNDEFINED;
+  MPI_Comm_split(MPI_COMM_WORLD, inFirstRow, col, &row0Comm);
+
+  if (row == 0) {
+    MPI_Scatter(global_arr.data(), N, MPI_INT, local_row.data(), N, MPI_INT, 0, row0Comm);
+  }
+
+  MPI_Comm colComm;
+  MPI_Comm_split(MPI_COMM_WORLD, col, row, &colComm);
+
+  MPI_Bcast(local_row.data(), N, MPI_INT, 0, colComm);
+
+  MPI_Comm_free(&colComm);
   
-  if ( rank > 0 && rank < P) {
-    MPI_Irecv(local_row.data(), N, MPI_INT, 0, 0, MPI_COMM_WORLD, &requests[rank]);
-    MPI_Wait(&requests[rank], MPI_STATUS_IGNORE);
-  }
-
-  if (rank < P) {
-    MPI_Send(local_row.data(), N, MPI_INT, rank + P, 0, MPI_COMM_WORLD);
-  }
-  
-  if (rank >= P && rank < size - P) {
-    MPI_Recv(local_row.data(), N, MPI_INT, rank - P, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    MPI_Send(local_row.data(), N, MPI_INT, rank + P, 0, MPI_COMM_WORLD);
-  }
-
-  if (rank >= size - P) {
-    MPI_Recv(local_row.data(), N, MPI_INT, rank - P, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-  }
-
   // Broadcast rows
   MPI_Comm rowComm;
   MPI_Comm_split(MPI_COMM_WORLD, row, col, &rowComm);
@@ -115,6 +112,7 @@ int main(int argc, char** argv) {
              );
 
   MPI_Comm_free(&rowComm);
+
   // Print reduced Ranking
   for (int r = 0; r < size; r++) {
     MPI_Barrier(MPI_COMM_WORLD);  // sincroniza antes de imprimir
@@ -124,7 +122,7 @@ int main(int argc, char** argv) {
         cout << local_col[i] << " ";
       }
       cout << endl;
-      printf("Reduced ranking: ", rank);
+      printf("Reduced ranking: %d", rank);
       for (int i = 0; i < N; i++) {
         cout << row_ranking[i] << " ";
       }
@@ -134,21 +132,24 @@ int main(int argc, char** argv) {
 
   // Gathering rankings in the root process
   
-  // El gather se hace con comunicación punto a punto O(P-1)
-  if (col == row && rank != 0) {
-    MPI_Send(row_ranking.data(), N, MPI_INT, 0, 0, MPI_COMM_WORLD);
-  }
-  if (rank == 0) {
-    for (int i = 0; i < N; i++) {
-      global_ranking[i] = row_ranking[i];
-    }
+  // El gather es más eficiente O(log(P)) que el send/recv O(P - 1)
+  int isDiag = (col == row) ? 1 : MPI_UNDEFINED;
+  MPI_Comm diagComm;
+  MPI_Comm_split(MPI_COMM_WORLD, isDiag, 0, &diagComm);
 
-    for (int i = 1; i < P; i++) {
-      MPI_Recv(global_ranking.data() + i * N, N, MPI_INT, (i + (P * i)), 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    }
+  if (isDiag == 1) {
+    MPI_Gather(row_ranking.data(),
+               N, MPI_INT,
+               global_ranking.data(),
+               N, MPI_INT,
+               0,
+               diagComm);
+
+    MPI_Comm_free(&diagComm);
   }
 
   // Hasta aquí se calcula el tiempo
+  t1=MPI_Wtime();
   
   // Ordenamiento final en O(n) y print
   if (rank == 0) {
@@ -162,6 +163,10 @@ int main(int argc, char** argv) {
     print_array(ordered_array, n);
   }
 
+  // Print time
+  if (rank == 0) {
+    printf("Time taken: %f seconds\n", t1 - t0);
+  }
 
   MPI_Finalize();
   return 0;
